@@ -40,6 +40,12 @@ resource "aws_s3_bucket" "my_protected_bucket" {
   versioning {
     enabled = true
   }
+  
+  # Enable server access logging
+  logging {
+    target_bucket = var.access_logging_bucket_name
+    target_prefix = "${var.bucket_name}/"
+  }
 
   # Enable default Server Side Encryption 
   server_side_encryption_configuration {

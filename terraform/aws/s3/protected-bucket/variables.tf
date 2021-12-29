@@ -14,3 +14,9 @@ variable "bucket_name" {
     error_message = "The bucket_name must follow naming rules. Check them out at: https://docs.aws.amazon.com/AmazonS3/latest/userguide/bucketnamingrules.html."
   }
 }
+
+variable "access_logging_bucket_name" {
+  description = "S3 bucket name for access logging storage"
+  type        = string
+  default     = "my-access-logging-bucket-name"
+}

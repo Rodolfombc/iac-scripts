@@ -2,11 +2,11 @@ terraform {
   required_providers {
     aws = {
       source  = "hashicorp/aws"
-      version = "~> 3.27"
+      version = "~> 4.0.0"
     }
   }
 
-  required_version = ">= 0.14.9"
+  required_version = ">= 0.15"
 }
 
 provider "aws" {
@@ -34,46 +34,79 @@ resource "aws_kms_alias" "kms_s3_key_alias" {
 ########################
 resource "aws_s3_bucket" "my_protected_bucket" {
   bucket = var.bucket_name
+}
+
+##########################
+# Bucket private access
+##########################
+resource "aws_s3_bucket_acl" "my_protected_bucket_acl" {
+  bucket = aws_s3_bucket.my_protected_bucket.id
   acl    = "private"
+}
 
-  # Enable bucket versioning
-  versioning {
-    enabled = true
+#############################
+# Enable bucket versioning
+#############################
+resource "aws_s3_bucket_versioning" "my_protected_bucket_versioning" {
+  bucket = aws_s3_bucket.my_protected_bucket.id
+  versioning_configuration {
+    status = "Enabled"
   }
-  
-  # Enable server access logging
-  logging {
-    target_bucket = var.access_logging_bucket_name
-    target_prefix = "${var.bucket_name}/"
-  }
+}
 
-  # Enable default Server Side Encryption 
-  server_side_encryption_configuration {
-    rule {
-      apply_server_side_encryption_by_default {
+#################################
+# Enable server access logging
+#################################
+resource "aws_s3_bucket_logging" "my_protected_bucket_logging" {
+  bucket = aws_s3_bucket.my_protected_bucket.id
+
+  target_bucket = var.access_logging_bucket_name
+  target_prefix = "${var.bucket_name}/"
+}
+
+##########################################
+# Enable default Server Side Encryption
+##########################################
+resource "aws_s3_bucket_server_side_encryption_configuration" "my_protected_bucket_server_side_encryption" {
+  bucket = aws_s3_bucket.my_protected_bucket.bucket
+
+  rule {
+    apply_server_side_encryption_by_default {
         kms_master_key_id = aws_kms_key.kms_s3_key.arn
         sse_algorithm     = "aws:kms"
-      }
     }
   }
+}
 
-  # Create lifecycle rule
-  lifecycle_rule {
-    prefix  = "config/"
-    enabled = true
+############################
+# Creating Lifecycle Rule
+############################
+resource "aws_s3_bucket_lifecycle_configuration" "my_protected_bucket_lifecycle_rule" {
+  # Must have bucket versioning enabled first
+  depends_on = [aws_s3_bucket_versioning.my_protected_bucket_versioning]
 
-    noncurrent_version_transition {
-      days          = 30
-      storage_class = "STANDARD_IA"
+  bucket = aws_s3_bucket.my_protected_bucket.bucket
+
+  rule {
+    id = "basic_config"
+    status = "Enabled"
+
+    filter {
+      prefix = "config/"
     }
 
     noncurrent_version_transition {
-      days          = 60
-      storage_class = "GLACIER"
+      noncurrent_days = 30
+      storage_class   = "STANDARD_IA"
     }
 
+    noncurrent_version_transition {
+      noncurrent_days = 60
+      storage_class   = "GLACIER"
+    }
+    
     noncurrent_version_expiration {
-      days = 90
+      noncurrent_days = 90
     }
   }
 }

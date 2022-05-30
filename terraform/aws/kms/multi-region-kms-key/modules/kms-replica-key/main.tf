@@ -72,3 +72,7 @@ resource "aws_kms_alias" "kms_replica_key_alias" {
     name          = "alias/${data.aws_region.current.name}-replica-key"
     target_key_id = aws_kms_replica_key.kms_replica_key.key_id
 }
+
+output "kms_replica_key_arn" {
+  value = aws_kms_replica_key.kms_replica_key.arn
+}

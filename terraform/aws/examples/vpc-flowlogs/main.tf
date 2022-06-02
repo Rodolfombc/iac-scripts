@@ -25,6 +25,7 @@ provider "aws" {
 module "kms_primary_key_policy" {
   source = "../../modules/iam/policy/log-group"
 
+  policy_id = "primary-key-policy"
   users = ["root", "user/infrauser"]
 
   providers = {
@@ -35,6 +36,7 @@ module "kms_primary_key_policy" {
 module "kms_replica_key_policy" {
   source = "../../modules/iam/policy/log-group"
 
+  policy_id = "replica-key-policy"
   users = ["root", "user/infrauser"]
 
   providers = {
@@ -98,6 +100,14 @@ module "ohio_log_group" {
 ###########################
 # Creating a vpc flowlog
 ###########################
+module "vpc_flowlogs_iam_role" {
+  source = "../../modules/iam/role/vpc-flowlogs-role"
+
+  providers = {
+    aws = aws.default
+  }
+}
+
 module "ohio_vpc_flowlog" {
   source = "../../modules/vpc/flow-log"
 
@@ -105,6 +115,9 @@ module "ohio_vpc_flowlog" {
   log_destination           = module.ohio_log_group.log_group_arn
   vpc_id                    = "my-vpc-id"
   max_aggregation_interval  = 600
+
+  iam_role_arn              = module.vpc_flowlogs_iam_role.arn
+  iam_role_id               = module.vpc_flowlogs_iam_role.id
 
   providers = {
     aws = aws.ohio

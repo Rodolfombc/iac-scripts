@@ -27,3 +27,13 @@ variable "vpc_id" {
   description = "ID of the VPC from where we'll get flowlogs"
   type = string
 }
+
+variable "iam_role_arn" {
+  description = "ARN of the IAM Role created for vpc flowlogs"
+  type = string
+}
+
+variable "iam_role_id" {
+  description = "ID of the IAM Role created for vpc flowlogs"
+  type = string
+}

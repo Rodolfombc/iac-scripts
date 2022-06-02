@@ -12,7 +12,7 @@ data "aws_region" "current" {}
 data "aws_caller_identity" "current" {}
 
 data "aws_iam_policy_document" "kms_key_policy" {
-  policy_id = "kms-key-policy"
+  policy_id = var.policy_id
 
   statement {
     sid = "Enable IAM User Permissions"

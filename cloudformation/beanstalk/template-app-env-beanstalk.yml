@@ -1,0 +1,457 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "Beanstalk environment for my-awesome-app"
+
+Parameters:
+  AppName:
+    Type: String
+    Default: my-awesome-app
+  AppEnv:
+    Type: String
+    Default: dev
+  AppInstanceType: 
+    Type: String
+    Default: t3a.small
+  HealthCheckUrl:
+    Type: String
+    Default: /health
+  InstanceMinNumber: 
+    Type: String
+    Default: 1
+  InstanceMaxNumber: 
+    Type: String
+    Default: 4
+  AccountVpc:
+    Type: AWS::EC2::VPC::Id
+    Description: AWS VPC ID
+    Default: vpc-id
+  EC2Subnets:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Subnets my-private-subnet-1,my-private-subnet-2
+    Default: private-subnet-id-1,private-subnet-id-2
+  LoadBalancerSubnets:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Subnets my-public-subnet-1,my-public-subnet-2
+    Default: public-subnet-id-1,public-subnet-id-2
+  LoadBalancerVisibility:
+    Type: String
+    Default: public
+  LoadBalancerType:
+    Type: String
+    Default: application
+  LoadBalancerAccessLogsS3Bucket:
+    Type: String
+    Default: load-balancer-access-logs-bucket-name
+  EBSolutionStackName:
+    Type: String
+    Default: 64bit Amazon Linux 2 v3.4.16 running Docker
+  BuildspecPath:
+    Type: String
+    Default: aws/app_buildspec.yml
+  GitHubProjectLocation:
+    Type: String
+    Default: https://github.com/MyUser/my-awesome-app.git
+  GitHubSourceBranch:
+    Type: String
+    Default: main
+  CodeBuildSecurityGroupId:
+    Type: String
+    Default: codebuild-securitygroup-id
+  CodeBuildSubnets:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Subnets codebuild-subnet-1,codebuild-subnet-2
+    Default: codebuild-subnet-id-1,codebuild-subnet-id-2
+
+Resources:
+  CodeBuildServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ["codebuild.amazonaws.com"]
+            Action: ["sts:AssumeRole"]
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AdministratorAccess-AWSElasticBeanstalk
+        - arn:aws:iam::aws:policy/SecretsManagerReadWrite
+      Policies:
+        - PolicyName: CloudWatchPermissions
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  [
+                    "logs:CreateLogGroup",
+                    "logs:CreateLogStream",
+                    "logs:PutLogEvents",
+                    "cloudwatch:PutMetricAlarm"
+                  ]
+                Resource: 
+                  [
+                    !Sub "arn:aws:logs:*:${AWS::AccountId}:log-group:*",
+                    !Sub "arn:aws:logs:*:${AWS::AccountId}:log-group:*:log-stream:*",
+                    !Sub "arn:aws:cloudwatch:*:${AWS::AccountId}:alarm:*"
+                  ]
+        - PolicyName: S3Permissions
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  [
+                    "s3:PutObject",
+                    "s3:GetObject",
+                    "s3:GetObjectVersion",
+                    "s3:GetBucketAcl",
+                    "s3:GetBucketLocation"
+                  ]
+                Resource:
+                  [
+                    !Sub "arn:aws:s3:::{{resolve:secretsmanager:s3/myappbucket:SecretString}}",
+                    !Sub "arn:aws:s3:::{{resolve:secretsmanager:s3/myappbucket:SecretString}}/*"
+                  ]
+        - PolicyName: CodeBuildPermissions
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  [
+                    "codebuild:CreateReportGroup",
+                    "codebuild:CreateReport",
+                    "codebuild:UpdateReport",
+                    "codebuild:BatchPutTestCases",
+                    "codebuild:BatchPutCodeCoverages"
+                  ]
+                Resource: !Sub "arn:aws:codebuild:*:${AWS::AccountId}:report-group/*"
+        - PolicyName: EC2Permissions
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  [
+                    "ec2:CreateNetworkInterface",
+                    "ec2:DescribeDhcpOptions",
+                    "ec2:DescribeNetworkInterfaces",
+                    "ec2:DeleteNetworkInterface",
+                    "ec2:DescribeSubnets",
+                    "ec2:DescribeSecurityGroups",
+                    "ec2:DescribeVpcs"
+                  ]
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  [
+                    "ec2:CreateNetworkInterface",
+                    "ec2:CreateNetworkInterfacePermission"
+                  ]
+                Resource: !Sub "arn:aws:ec2:*:${AWS::AccountId}:network-interface/*"
+                Condition:
+                  StringLike:
+                    'ec2:Subnet':
+                      - 'arn:aws:ec2:*:*:subnet/*'
+                    'ec2:AuthorizedService': codebuild.amazonaws.com
+
+  CodeBuildLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub ${AppName}-${AppEnv}-codebuild
+      RetentionInDays: 7
+      KmsKeyId: "{{resolve:secretsmanager:kms/cloudwatchkey:SecretString}}"
+
+  CodeBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Artifacts:
+        Type: NO_ARTIFACTS
+      Description: !Sub Deploy project for ${AppName}-${AppEnv} Beanstalk environment
+      Environment:
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: "{{resolve:secretsmanager:codebuild/ecr/mycustomimage:SecretString}}"
+        ImagePullCredentialsType: CODEBUILD
+        Type: LINUX_CONTAINER
+      LogsConfig:
+        CloudWatchLogs:
+          GroupName: !Ref CodeBuildLogGroup
+          Status: ENABLED
+          StreamName: codebuild-build
+      Name: !Sub ${AppName}-${AppEnv}
+      ServiceRole: !Ref CodeBuildServiceRole
+      Source:
+        BuildSpec: !Ref BuildspecPath
+        Location: !Ref GitHubProjectLocation
+        SourceIdentifier: !Ref GitHubSourceBranch
+        Type: GITHUB
+      Triggers:
+        BuildType: BUILD
+        FilterGroups:
+          - - Pattern: PUSH
+              Type: EVENT
+            - Pattern: !Sub refs/heads/${GitHubSourceBranch}
+              Type: HEAD_REF
+        Webhook: true
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref CodeBuildSecurityGroupId
+        Subnets: !Ref CodeBuildSubnets
+        VpcId: !Ref AccountVpc
+
+  InstanceProfileRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ["ec2.amazonaws.com"]
+            Action: ["sts:AssumeRole"]
+      Policies:
+        - PolicyName: CloudWatchPermissions
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  [
+                    "logs:CreateLogGroup",
+                    "logs:CreateLogStream",
+                    "logs:GetLogEvents",
+                    "logs:PutLogEvents",
+                    "logs:DescribeLogGroups",
+                    "logs:DescribeLogStreams",
+                    "logs:FilterLogEvents",
+                    "logs:PutRetentionPolicy"
+                  ]
+                Resource: 
+                  [
+                    !Sub "arn:aws:logs:*:${AWS::AccountId}:log-group:*",
+                    !Sub "arn:aws:logs:*:${AWS::AccountId}:log-group:*:log-stream:*"
+                  ]
+        - PolicyName: BucketAccessPermissions
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  [
+                    "s3:Get*",
+                    "s3:List*",
+                    "s3:PutObject"
+                  ]
+                Resource: 
+                  [
+                    "arn:aws:s3:::elasticbeanstalk-*",
+                    "arn:aws:s3:::elasticbeanstalk-*/*"
+                  ]
+        - PolicyName: ElasticBeanstalkHealthAccessPermissions
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  [
+                    "elasticbeanstalk:PutInstanceStatistics"
+                  ]
+                Resource: 
+                  [
+                    !Sub "arn:aws:elasticbeanstalk:*:${AWS::AccountId}:application/*",
+                    !Sub "arn:aws:elasticbeanstalk:*:${AWS::AccountId}:environment/*"
+                  ]
+
+  InstanceProfile:
+    Type: "AWS::IAM::InstanceProfile"
+    Properties:
+      InstanceProfileName: !Sub ${App}-${AppEnv}-IAMProfile
+      Roles:
+        - !Ref InstanceProfileRole
+
+  DockerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/elasticbeanstalk/${App}-${AppEnv}/var/log/docker
+      RetentionInDays: 7
+      KmsKeyId: "{{resolve:secretsmanager:kms/cloudwatchkey:SecretString}}"
+
+  DockerComposeLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/elasticbeanstalk/${App}-${AppEnv}/var/log/docker-compose-events.log
+      RetentionInDays: 7
+      KmsKeyId: "{{resolve:secretsmanager:kms/cloudwatchkey:SecretString}}"
+
+  DockerEventsLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/elasticbeanstalk/${App}-${AppEnv}/var/log/docker-events.log
+      RetentionInDays: 7
+      KmsKeyId: "{{resolve:secretsmanager:kms/cloudwatchkey:SecretString}}"
+
+  AppLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/elasticbeanstalk/${App}-${AppEnv}/var/log/eb-docker/containers/eb-current-app/stdouterr.log
+      RetentionInDays: 7
+      KmsKeyId: "{{resolve:secretsmanager:kms/cloudwatchkey:SecretString}}"
+
+  AppErrorLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/elasticbeanstalk/${App}-${AppEnv}/var/log/eb-docker/containers/eb-current-app/unexpected-quit.log
+      RetentionInDays: 7
+      KmsKeyId: "{{resolve:secretsmanager:kms/cloudwatchkey:SecretString}}"
+
+  EbEngineLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/elasticbeanstalk/${App}-${AppEnv}/var/log/eb-engine.log
+      RetentionInDays: 7
+      KmsKeyId: "{{resolve:secretsmanager:kms/cloudwatchkey:SecretString}}"
+
+  EbHooksLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/elasticbeanstalk/${App}-${AppEnv}/var/log/eb-hooks.log
+      RetentionInDays: 7
+      KmsKeyId: "{{resolve:secretsmanager:kms/cloudwatchkey:SecretString}}"
+
+  NginxAccessLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/elasticbeanstalk/${App}-${AppEnv}/var/log/nginx/access.log
+      RetentionInDays: 7
+      KmsKeyId: "{{resolve:secretsmanager:kms/cloudwatchkey:SecretString}}"
+
+  NginxErrorLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/elasticbeanstalk/${App}-${AppEnv}/var/log/nginx/error.log
+      RetentionInDays: 7
+      KmsKeyId: "{{resolve:secretsmanager:kms/cloudwatchkey:SecretString}}"
+
+  LoadBalancerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties: 
+      GroupDescription: "Load Balancer Security Group"
+      GroupName: !Sub ${App}-${AppEnv}-loadbalancer-securitygroup
+      SecurityGroupIngress: 
+        - CidrIp: "0.0.0.0/0"
+          Description: "Enable only HTTP requests from within the VPC"
+          FromPort: 80
+          IpProtocol: tcp
+          ToPort: 80
+        - CidrIp: "0.0.0.0/0"
+          Description: "Receive all IPv4 internet HTTPS requests"
+          FromPort: 443
+          IpProtocol: tcp
+          ToPort: 443
+      Tags:
+        - Key: Name
+          Value: !Sub ${App}-${AppEnv}-loadbalancer-securitygroup
+      VpcId: !Ref AccountVpc
+
+  App:
+    Type: "AWS::ElasticBeanstalk::Application"
+    Properties:
+      ApplicationName: !Sub ${AppName}
+      Description: !Sub ${AppName} application
+  
+  AppVersion:
+    Type: "AWS::ElasticBeanstalk::ApplicationVersion"
+    Properties:
+      ApplicationName: !Ref App
+      Description: String
+      SourceBundle:
+        S3Bucket: "{{resolve:secretsmanager:s3/myappbucket:SecretString}}"
+        S3Key: s3key.zip
+
+  AppEnvironment:
+    Type: "AWS::ElasticBeanstalk::Environment"
+    Properties:
+      EnvironmentName: !Sub ${AppName}-${AppEnv}
+      ApplicationName: !Ref App
+      SolutionStackName: !Sub ${EBSolutionStackName}
+      Tier:
+        Name: WebServer
+        Type: Standard
+        Version: "1.0"
+      VersionLabel: !Ref AppVersion
+      OptionSettings: 
+        - Namespace: aws:elasticbeanstalk:application:environment
+          OptionName: MY_CUSTOM_ENV_VAR
+          Value: "{{resolve:secretsmanager:mycustomenvvar:SecretString}}"
+        - Namespace: aws:elasticbeanstalk:command
+          OptionName: DeploymentPolicy
+          Value: RollingWithAdditionalBatch
+        - Namespace: aws:elasticbeanstalk:command
+          OptionName: BatchSizeType
+          Value: Fixed
+        - Namespace: aws:elasticbeanstalk:command
+          OptionName: BatchSize
+          Value: 1
+        - Namespace: aws:autoscaling:asg
+          OptionName: MinSize
+          Value: !Sub ${InstanceMinNumber}
+        - Namespace: aws:autoscaling:asg
+          OptionName: MaxSize
+          Value: !Sub ${InstanceMaxNumber}
+        - Namespace: aws:ec2:vpc
+          OptionName: VPCId
+          Value: !Ref AccountVpc
+        - Namespace: aws:ec2:vpc
+          OptionName: Subnets
+          Value: 
+            Fn::Join:
+            - ','
+            - !Ref EC2Subnets
+        - Namespace: "aws:ec2:vpc"
+          OptionName: ELBSubnets
+          Value: 
+            Fn::Join:
+            - ','
+            - !Ref LoadBalancerSubnets
+        - Namespace: "aws:ec2:vpc"
+          OptionName: ELBScheme
+          Value: !Sub ${LoadBalancerVisibility}
+        - Namespace: "aws:autoscaling:launchconfiguration"
+          OptionName: InstanceType
+          Value: !Ref AppInstanceType
+        - Namespace: "aws:autoscaling:launchconfiguration"
+          OptionName: IamInstanceProfile
+          Value: !Ref InstanceProfile
+        - Namespace: "aws:autoscaling:launchconfiguration"
+          OptionName: DisableIMDSv1
+          Value: true
+        - Namespace: "aws:autoscaling:launchconfiguration"
+          OptionName: MonitoringInterval
+          Value: "1 minute"
+        - Namespace: "aws:elasticbeanstalk:environment:process:default"
+          OptionName: HealthCheckPath
+          Value: !Ref HealthCheckUrl
+        - Namespace: aws:elasticbeanstalk:environment
+          OptionName: EnvironmentType
+          Value: LoadBalanced
+        - Namespace: "aws:elasticbeanstalk:environment"
+          OptionName: LoadBalancerType
+          Value: !Ref LoadBalancerType
+        - Namespace: aws:elasticbeanstalk:cloudwatch:logs
+          OptionName: StreamLogs
+          Value: true
+        - Namespace: aws:elbv2:loadbalancer
+          OptionName: AccessLogsS3Enabled
+          Value: true
+        - Namespace: aws:elbv2:loadbalancer
+          OptionName: AccessLogsS3Bucket
+          Value: !Ref LoadBalancerAccessLogsS3Bucket
+        - Namespace: aws:elbv2:loadbalancer
+          OptionName: AccessLogsS3Prefix
+          Value: !Ref AppName
+        - Namespace: aws:elbv2:loadbalancer
+          OptionName: ManagedSecurityGroup
+          Value: !Ref LoadBalancerSecurityGroup
+        - Namespace: aws:elbv2:loadbalancer
+          OptionName: SecurityGroups
+          Value: !Ref LoadBalancerSecurityGroup
